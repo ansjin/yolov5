@@ -121,20 +121,79 @@ class BottleneckCSP(nn.Module):
         y2 = self.cv2(x)
         return self.cv4(self.act(self.bn(torch.cat((y1, y2), dim=1))))
 
+class ParallelModule(nn.Sequential):
+    def __init__(self, *args):
+        super(ParallelModule, self).__init__( *args )
 
+    def forward(self, input):
+        output = torch.ones(input.size())
+        for module in self:
+            torch.mul(output, module(input))
+        return output
+    
+class ParallelModule1(nn.Module):
+    def __init__(self, modules):
+        super(ParallelModule, self).__init__()
+        
+        self.m = modules
+
+    def forward(self, input):
+        output = torch.ones(input.size())
+        count = 0
+        for module in self.m:
+            torch.mul(output, module(input))
+        return output
+        
 class C3(nn.Module):
     # CSP Bottleneck with 3 convolutions
-    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+    def __init__(self, c1, c2, nx=1, nm=1, ns=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
         c_ = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv1x = Conv(c1, c_, 1, 1)
+        self.cv1m = Conv(c1, c_, 1, 1)
+        self.cv1s = Conv(c1, c_, 1, 1)
+        
         self.cv2 = Conv(c1, c_, 1, 1)
-        self.cv3 = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
-        self.m = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)])
+        # self.cv2m = Conv(c1, c_, 1, 1)
+        # self.cv2s = Conv(c1, c_, 1, 1)
+        
+        self.cv3x = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        self.cv3m = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        self.cv3s = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        
+        #print(nx, ":",  nm, ":", ns)
+        
+        self.bottleneckx = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(nx)])
+        self.bottleneckm = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(nm)])
+        self.bottlenecks = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(ns)])
+        
+        # m1 = []
+        # for _ in range(n):
+        #     m1.append(Bottleneck(c_, c_, shortcut, g, e=1.0))
+        # self.m = ParallelModule(*m1)
+        #self.b1 = Bottleneck(c_, c_, shortcut, g, e=1.0)
+        #self.b2 = Bottleneck(c_, c_, shortcut, g, e=1.0)
         # self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
 
-    def forward(self, x):
-        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim=1))
+    def forward(self, x):  
+        #inter_x =  self.cv1(x)
+                
+        # for bottleneck in self.bottlenecks:
+        #     if outputx is None:
+        #         outputx = bottleneck(inter_x)
+        #     else:
+        #         outputx = torch.add(outputx, bottleneck(inter_x))
+        
+        
+        outputx = self.cv3x(torch.cat((self.bottleneckx(self.cv1x(x)), self.cv2(x)), dim=1))
+        outputm = self.cv3m(torch.cat((self.bottleneckm(self.cv1m(x)), self.cv2(x)), dim=1))
+        outputs = self.cv3s(torch.cat((self.bottlenecks(self.cv1s(x)), self.cv2(x)), dim=1))
+        
+        output = outputx
+        output = torch.add(output, outputm)
+        output = torch.add(output, outputs)
+        
+        return output
 
 
 class C3TR(C3):
@@ -203,7 +262,9 @@ class Focus(nn.Module):
         # self.contract = Contract(gain=2)
 
     def forward(self, x):  # x(b,c,w,h) -> y(b,4c,w/2,h/2)
-        return self.conv(torch.cat([x[..., ::2, ::2], x[..., 1::2, ::2], x[..., ::2, 1::2], x[..., 1::2, 1::2]], 1))
+        output = self.conv(torch.cat([x[..., ::2, ::2], x[..., 1::2, ::2], x[..., ::2, 1::2], x[..., 1::2, 1::2]], 1))
+        
+        return output
         # return self.conv(self.contract(x))
 
 
