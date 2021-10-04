@@ -32,6 +32,46 @@ def autopad(k, p=None):  # kernel, padding
         p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
     return p
 
+class Conv1(nn.Module):
+    # Standard convolution
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):  # ch_in, ch_out, kernel, stride, padding, groups
+        super().__init__()
+        self.convx = nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False)
+        self.bnx = nn.BatchNorm2d(c2)
+        self.actx = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
+        
+        self.convm = nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False)
+        self.bnm = nn.BatchNorm2d(c2)
+        self.actm = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
+        
+        self.convs = nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False)
+        self.bns = nn.BatchNorm2d(c2)
+        self.acts = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
+
+    def forward(self, x):
+        outputx = self.actx(self.bnx(self.convx(x[0])))
+        outputm = self.actm(self.bnm(self.convm(x[1])))
+        outputs = self.acts(self.bns(self.convs(x[2])))
+        
+        output = outputx
+        output = torch.add(output, outputm)
+        output = torch.add(output, outputs)
+        
+        return [outputx, outputm, outputs]
+
+    def forward_fuse(self, x):
+        outputx = self.actx(self.convx(x[0]))
+        outputm = self.actm(self.convm(x[1]))
+        outputs = self.acts(self.convs(x[2]))
+        
+        output = outputx
+        output = torch.add(output, outputm)
+        output = torch.add(output, outputs)
+        
+        return [outputx, outputm, outputs]
+        
+        
+    
 
 class Conv(nn.Module):
     # Standard convolution
@@ -121,20 +161,144 @@ class BottleneckCSP(nn.Module):
         y2 = self.cv2(x)
         return self.cv4(self.act(self.bn(torch.cat((y1, y2), dim=1))))
 
+class ParallelModule(nn.Sequential):
+    def __init__(self, *args):
+        super(ParallelModule, self).__init__( *args )
 
-class C3(nn.Module):
+    def forward(self, input):
+        output = torch.ones(input.size())
+        for module in self:
+            torch.mul(output, module(input))
+        return output
+    
+class ParallelModule1(nn.Module):
+    def __init__(self, modules):
+        super(ParallelModule, self).__init__()
+        
+        self.m = modules
+
+    def forward(self, input):
+        output = torch.ones(input.size())
+        count = 0
+        for module in self.m:
+            torch.mul(output, module(input))
+        return output
+
+class C31(nn.Module):
     # CSP Bottleneck with 3 convolutions
-    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+    def __init__(self, c1, c2, nx=1, nm=1, ns=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
         c_ = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = Conv(c1, c_, 1, 1)
-        self.cv3 = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
-        self.m = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)])
+        self.cv1x = Conv(c1, c_, 1, 1)
+        self.cv1m = Conv(c1, c_, 1, 1)
+        self.cv1s = Conv(c1, c_, 1, 1)
+        
+        self.cv2x = Conv(c1, c_, 1, 1)
+        self.cv2m = Conv(c1, c_, 1, 1)
+        self.cv2s = Conv(c1, c_, 1, 1)
+        
+        self.cv3x = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        self.cv3m = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        self.cv3s = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        
+        #print(nx, ":",  nm, ":", ns)
+        
+        self.bottleneckx = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(nx)])
+        self.bottleneckm = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(nm)])
+        self.bottlenecks = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(ns)])
+        
+        # m1 = []
+        # for _ in range(n):
+        #     m1.append(Bottleneck(c_, c_, shortcut, g, e=1.0))
+        # self.m = ParallelModule(*m1)
+        #self.b1 = Bottleneck(c_, c_, shortcut, g, e=1.0)
+        #self.b2 = Bottleneck(c_, c_, shortcut, g, e=1.0)
         # self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
 
-    def forward(self, x):
-        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim=1))
+    def forward(self, x):  
+        #inter_x =  self.cv1(x)
+                
+        # for bottleneck in self.bottlenecks:
+        #     if outputx is None:
+        #         outputx = bottleneck(inter_x)
+        #     else:
+        #         outputx = torch.add(outputx, bottleneck(inter_x))
+        
+        
+        outputx = self.cv3x(torch.cat((self.bottleneckx(self.cv1x(x[0])), self.cv2x(x[0])), dim=1))
+        outputm = self.cv3m(torch.cat((self.bottleneckm(self.cv1m(x[1])), self.cv2m(x[1])), dim=1))
+        outputs = self.cv3s(torch.cat((self.bottlenecks(self.cv1s(x[2])), self.cv2s(x[2])), dim=1))
+        
+        # output = outputx
+        # output = torch.add(output, outputm)
+        # output = torch.add(output, outputs)
+        
+        return [outputx, outputm, outputs]
+            
+class C3(nn.Module):
+    # CSP Bottleneck with 3 convolutions
+    def __init__(self, c1, c2, nx=1, nm=1, ns=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1x = Conv(c1, c_, 1, 1)
+        self.cv1m = Conv(c1, c_, 1, 1)
+        self.cv1s = Conv(c1, c_, 1, 1)
+        
+        self.cv2x = Conv(c1, c_, 1, 1)
+        self.cv2m = Conv(c1, c_, 1, 1)
+        self.cv2s = Conv(c1, c_, 1, 1)
+        
+        self.cv3x = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        self.cv3m = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        self.cv3s = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+        
+        #print(nx, ":",  nm, ":", ns)
+        
+        self.bottleneckx = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(nx)])
+        self.bottleneckm = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(nm)])
+        self.bottlenecks = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(ns)])
+        
+        # m1 = []
+        # for _ in range(n):
+        #     m1.append(Bottleneck(c_, c_, shortcut, g, e=1.0))
+        # self.m = ParallelModule(*m1)
+        #self.b1 = Bottleneck(c_, c_, shortcut, g, e=1.0)
+        #self.b2 = Bottleneck(c_, c_, shortcut, g, e=1.0)
+        # self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
+
+    def forward(self, x):  
+        #inter_x =  self.cv1(x)
+                
+        # for bottleneck in self.bottlenecks:
+        #     if outputx is None:
+        #         outputx = bottleneck(inter_x)
+        #     else:
+        #         outputx = torch.add(outputx, bottleneck(inter_x))
+        
+        
+        outputx = self.cv3x(torch.cat((self.bottleneckx(self.cv1x(x)), self.cv2x(x)), dim=1))
+        outputm = self.cv3m(torch.cat((self.bottleneckm(self.cv1m(x)), self.cv2m(x)), dim=1))
+        outputs = self.cv3s(torch.cat((self.bottlenecks(self.cv1s(x)), self.cv2s(x)), dim=1))
+        
+        output = outputx
+        output = torch.add(output, outputm)
+        output = torch.add(output, outputs)
+        
+        return output
+
+# class C3(nn.Module):
+#     # CSP Bottleneck with 3 convolutions
+#     def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+#         super().__init__()
+#         c_ = int(c2 * e)  # hidden channels
+#         self.cv1 = Conv(c1, c_, 1, 1)
+#         self.cv2 = Conv(c1, c_, 1, 1)
+#         self.cv3 = Conv(2 * c_, c2, 1)  # act=FReLU(c2)
+#         self.m = nn.Sequential(*[Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)])
+#         # self.m = nn.Sequential(*[CrossConv(c_, c_, 3, 1, g, 1.0, shortcut) for _ in range(n)])
+
+#     def forward(self, x):
+#         return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), dim=1))
 
 
 class C3TR(C3):
@@ -166,15 +330,38 @@ class SPP(nn.Module):
     def __init__(self, c1, c2, k=(5, 9, 13)):
         super().__init__()
         c_ = c1 // 2  # hidden channels
-        self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = Conv(c_ * (len(k) + 1), c2, 1, 1)
-        self.m = nn.ModuleList([nn.MaxPool2d(kernel_size=x, stride=1, padding=x // 2) for x in k])
+        self.cv1x = Conv(c1, c_, 1, 1)
+        self.cv2x = Conv(c_ * (len(k) + 1), c2, 1, 1)
+        self.mx = nn.ModuleList([nn.MaxPool2d(kernel_size=x, stride=1, padding=x // 2) for x in k])
+        
+        
+        self.cv1m = Conv(c1, c_, 1, 1)
+        self.cv2m = Conv(c_ * (len(k) + 1), c2, 1, 1)
+        self.mm = nn.ModuleList([nn.MaxPool2d(kernel_size=x, stride=1, padding=x // 2) for x in k])
+        
+        self.cv1s = Conv(c1, c_, 1, 1)
+        self.cv2s = Conv(c_ * (len(k) + 1), c2, 1, 1)
+        self.ms = nn.ModuleList([nn.MaxPool2d(kernel_size=x, stride=1, padding=x // 2) for x in k])
 
     def forward(self, x):
-        x = self.cv1(x)
+        
+        x[0] = self.cv1x(x[0])
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')  # suppress torch 1.9.0 max_pool2d() warning
-            return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
+            outputx = self.cv2x(torch.cat([x[0]] + [m(x[0]) for m in self.mx], 1))
+
+        x[1] = self.cv1m(x[1])
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')  # suppress torch 1.9.0 max_pool2d() warning
+            outputm = self.cv2m(torch.cat([x[1]] + [m(x[1]) for m in self.mm], 1))
+        
+        x[2] = self.cv1s(x[2])
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')  # suppress torch 1.9.0 max_pool2d() warning
+            outputs = self.cv2s(torch.cat([x[2]] + [m(x[2]) for m in self.ms], 1))
+            
+        return [outputx, outputm, outputs]
+            
 
 
 class SPPF(nn.Module):
@@ -199,11 +386,14 @@ class Focus(nn.Module):
     # Focus wh information into c-space
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):  # ch_in, ch_out, kernel, stride, padding, groups
         super().__init__()
-        self.conv = Conv(c1 * 4, c2, k, s, p, g, act)
+        self.conv = Conv1(c1 * 4, c2, k, s, p, g, act)
         # self.contract = Contract(gain=2)
 
     def forward(self, x):  # x(b,c,w,h) -> y(b,4c,w/2,h/2)
-        return self.conv(torch.cat([x[..., ::2, ::2], x[..., 1::2, ::2], x[..., ::2, 1::2], x[..., 1::2, 1::2]], 1))
+        res = torch.cat([x[..., ::2, ::2], x[..., 1::2, ::2], x[..., ::2, 1::2], x[..., 1::2, 1::2]], 1)
+        output = self.conv([res, res, res])
+        
+        return output
         # return self.conv(self.contract(x))
 
 
@@ -263,6 +453,21 @@ class Expand(nn.Module):
         return x.view(b, c // s ** 2, h * s, w * s)  # x(1,16,160,160)
 
 
+class Upsample(nn.Module):
+    # Concatenate a list of tensors along dimension
+    def __init__(self):
+        super().__init__()
+        self.mx = nn.Upsample(scale_factor=2, mode='nearest')
+        self.mm = nn.Upsample(scale_factor=2, mode='nearest')
+        self.ms = nn.Upsample(scale_factor=2, mode='nearest')
+
+
+    def forward(self, x):
+        outputx = self.mx(x[0])
+        outputm = self.mm(x[1])
+        outputs = self.ms(x[2])
+        return [outputx, outputm, outputs]
+
 class Concat(nn.Module):
     # Concatenate a list of tensors along dimension
     def __init__(self, dimension=1):
@@ -270,27 +475,13 @@ class Concat(nn.Module):
         self.d = dimension
 
     def forward(self, x):
-        return torch.cat(x, self.d)
+        #print(len(x[1]))
+        outputx = torch.cat((x[0][0], x[1][0]), self.d)
+        outputm = torch.cat((x[0][1], x[1][0]), self.d)
+        outputs = torch.cat((x[0][2], x[1][0]), self.d)
+        return [outputx, outputm, outputs]
 
-class Add(nn.Module):
-    # Concatenate a list of tensors along dimension
-    def __init__(self, dimension=1):
-        super().__init__()
-        self.d = dimension
 
-    def forward(self, x):
-    
-        return x
-
-class Add1(nn.Module):
-    # Concatenate a list of tensors along dimension
-    def __init__(self, dimension=1):
-        super().__init__()
-        self.d = dimension
-
-    def forward(self, x):
-        return x
-    
 class AutoShape(nn.Module):
     # YOLOv5 input-robust model wrapper for passing cv2/np/PIL/torch inputs. Includes preprocessing, inference and NMS
     conf = 0.25  # NMS confidence threshold

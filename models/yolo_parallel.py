@@ -36,7 +36,7 @@ class Detect(nn.Module):
     stride = None  # strides computed during build
     onnx_dynamic = False  # ONNX export parameter
 
-    def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
+    def __init__(self, nc=80, anchors=(), ch=(), inplace=False):  # detection layer
         super().__init__()
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
@@ -50,27 +50,50 @@ class Detect(nn.Module):
         self.inplace = inplace  # use in-place ops (e.g. slice assignment)
 
     def forward(self, x):
-        z = []  # inference output
-        for i in range(self.nl):
-            x[i] = self.m[i](x[i])  # conv
-            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+        print(len(x))
+        # output0 = x[0][0]
+        # output0 = torch.add(output0, x[0][1])
+        # output0 = torch.add(output0, x[0][2])
+        
+        # output1 = x[1][0]
+        # output1 = torch.add(output1, x[1][1])
+        # output1 = torch.add(output1, x[1][2])
+        
+        # output2 = x[2][0]
+        # output2 = torch.add(output2, x[2][1])
+        # output2 = torch.add(output2, x[2][2])
+        
+        # #x = x[0], 
+        # x = [output0, output1, output2]
+        input1 = [x[0][0], x[1][0], x[2][0]]
+        input2 = [x[0][1], x[1][1], x[2][1]]
+        input3 = [x[0][2], x[1][2], x[2][2]]
+        
+        output = []
+        for x_i in [input1, input2, input3]:
+            z = []  # inference output
+            for i in range(self.nl):
+                x_i[i] = self.m[i](x_i[i])  # conv
+                bs, _, ny, nx = x_i[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+                x_i[i] = x_i[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
-            if not self.training:  # inference
-                if self.grid[i].shape[2:4] != x[i].shape[2:4] or self.onnx_dynamic:
-                    self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
+                if not self.training:  # inference
+                    if self.grid[i].shape[2:4] != x_i[i].shape[2:4] or self.onnx_dynamic:
+                        self.grid[i] = self._make_grid(nx, ny).to(x_i[i].device)
 
-                y = x[i].sigmoid()
-                if self.inplace:
-                    y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
-                else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
-                    xy = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i].view(1, self.na, 1, 1, 2)  # wh
-                    y = torch.cat((xy, wh, y[..., 4:]), -1)
-                z.append(y.view(bs, -1, self.no))
+                    y = x_i[i].sigmoid()
+                    if self.inplace:
+                        y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
+                        y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
+                    else:  # for YOLOv5 on AWS Inferentia https://github.com/ultralytics/yolov5/pull/2953
+                        xy = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
+                        wh = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i].view(1, self.na, 1, 1, 2)  # wh
+                        y = torch.cat((xy, wh, y[..., 4:]), -1)
+                    z.append(y.view(bs, -1, self.no))
 
-        return x if self.training else (torch.cat(z, 1), x)
+            output.append(x_i if self.training else (torch.cat(z, 1), x_i))
+        
+        return output
 
     @staticmethod
     def _make_grid(nx=20, ny=20):
@@ -106,7 +129,7 @@ class Model(nn.Module):
         if isinstance(m, Detect):
             s = 256  # 2x min stride
             m.inplace = self.inplace
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            m.stride = torch.tensor([s / x[0].shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             m.anchors /= m.stride.view(-1, 1, 1)
             check_anchor_order(m)
             self.stride = m.stride
@@ -203,7 +226,7 @@ class Model(nn.Module):
     def fuse(self):  # fuse model Conv2d() + BatchNorm2d() layers
         LOGGER.info('Fusing layers... ')
         for m in self.model.modules():
-            if isinstance(m, (Conv, DWConv)) and hasattr(m, 'bn'):
+            if isinstance(m, (Conv, Conv1, DWConv)) and hasattr(m, 'bn'):
                 m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
                 delattr(m, 'bn')  # remove batchnorm
                 m.forward = m.forward_fuse  # update forward
@@ -236,14 +259,14 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 pass
 
         n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
-                 BottleneckCSP, C3, C3TR, C3SPP, C3Ghost]:
+        if m in [Conv, Conv1, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
+                 BottleneckCSP, C3, C31, C3TR, C3SPP, C3Ghost]:
             c1, c2 = ch[f], args[0]
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, 8)
 
             args = [c1, c2, *args[1:]]
-            if m in [BottleneckCSP, C3, C3TR, C3Ghost]:
+            if m in [BottleneckCSP, C3, C31, C3TR, C3Ghost]:
                 nx = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
                 nm = n_ = max(round(n * 0.67), 1) if n > 1 else n  # depth gain
                 ns = n_ = max(round(n * 0.33), 1) if n > 1 else n  # depth gain
@@ -519,7 +542,7 @@ if __name__ == '__main__':
         child_counter += 1
 
     dummy_input = torch.randn(1,3,640,640).to(device)
-    torch.onnx.export(ee_model, dummy_input, "../weights/yolov_parallel_x_m_s.onnx", opset_version=12)
+    torch.onnx.export(ee_model, dummy_input, "../weights/yolov_parallel_x_m_s2.onnx", opset_version=12)
 
     # # Profile
     # if opt.profile:

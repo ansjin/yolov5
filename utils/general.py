@@ -377,7 +377,7 @@ def url2file(url):
     return file
 
 
-def download(url, dir='.', unzip=True, delete=True, curl=False, threads=1):
+def download(url, dir='.', unzip=True, delete=True, curl=True, threads=1):
     # Multi-threaded file download and unzip function, used in data.yaml for autodownload
     def download_one(url, dir):
         # Download 1 file
@@ -386,10 +386,10 @@ def download(url, dir='.', unzip=True, delete=True, curl=False, threads=1):
             Path(url).rename(f)  # move to dir
         elif not f.exists():
             print(f'Downloading {url} to {f}...')
-            if curl:
-                os.system(f"curl -L '{url}' -o '{f}' --retry 9 -C -")  # curl download, retry and resume on fail
-            else:
-                torch.hub.download_url_to_file(url, f, progress=True)  # torch download
+            #if curl:
+            os.system(f"curl -k -L '{url}' -o '{f}' --retry 9 -C -")  # curl download, retry and resume on fail
+            #else:
+            #    torch.hub.download_url_to_file(url, f, progress=True)  # torch download
         if unzip and f.suffix in ('.zip', '.gz'):
             print(f'Unzipping {f}...')
             if f.suffix == '.zip':
