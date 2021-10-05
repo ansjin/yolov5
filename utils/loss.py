@@ -140,10 +140,10 @@ class ComputeLoss:
         loss = []
         loss_items = []
         for model_num in range(0,3):
-            tcls, tbox, indices, anchors = self.build_targets(p, targets, model_num)  # targets
+            tcls, tbox, indices, anchors = self.build_targets(p[model_num], targets, model_num)  # targets
 
             # Losses
-            for i, pi in enumerate(p):  # layer index, layer predictions
+            for i, pi in enumerate(p[model_num]):  # layer index, layer predictions
                 b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
                 tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj
 
@@ -182,9 +182,9 @@ class ComputeLoss:
 
             if self.autobalance[model_num]:
                 self.balance[model_num] = [x / self.balance[model_num][self.ssi] for x in self.balance[model_num]]
-            lbox *= self.hyp['box']
-            lobj *= self.hyp['obj']
-            lcls *= self.hyp['cls']
+            lbox *= self.hyp[model_num]['box']
+            lobj *= self.hyp[model_num]['obj']
+            lcls *= self.hyp[model_num]['cls']
             bs = tobj.shape[0]  # batch size
 
             loss.append((lbox + lobj + lcls) * bs)
@@ -222,7 +222,7 @@ class ComputeLoss:
             if nt:
                 # Matches
                 r = t[:, :, 4:6] / anchors[:, None]  # wh ratio
-                j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare
+                j = torch.max(r, 1. / r).max(2)[0] < self.hyp[model_num]['anchor_t']  # compare
                 # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
                 t = t[j]  # filter
 

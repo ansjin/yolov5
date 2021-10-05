@@ -194,7 +194,6 @@ class Model(nn.Module):
         for k in [-4, -3, -2]: 
             m = self.model[k]  # Detect()
             if isinstance(m, Detect):
-                print(k)
                 s = 256  # 2x min stride
                 m.inplace = self.inplace
                 m.stride = torch.tensor([s / x[0].shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -204,7 +203,6 @@ class Model(nn.Module):
                 self._initialize_biases(m)  # only run once
             
             if isinstance(m, Detect2):
-                print(k)
                 s = 256  # 2x min stride
                 m.inplace = self.inplace
                 m.stride = torch.tensor([s / x[1].shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -214,7 +212,6 @@ class Model(nn.Module):
                 self._initialize_biases(m)  # only run once
                 
             if isinstance(m, Detect3):
-                print(k)
                 s = 256  # 2x min stride
                 m.inplace = self.inplace
                 m.stride = torch.tensor([s / x[2].shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -254,6 +251,7 @@ class Model(nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
+            
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -277,7 +275,11 @@ class Model(nn.Module):
         return p
 
     def _profile_one_layer(self, m, x, dt):
-        c = isinstance(m, Detect)  # is final layer, copy input as inplace fix
+        c = False
+        if isinstance(m, (Detect, Detect3, Detect2)):
+            # is final layer, copy input as inplace fix
+            c = True
+
         o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPs
         t = time_sync()
         for _ in range(10):
@@ -426,11 +428,13 @@ if __name__ == '__main__':
     # Create model
     model = Model(opt.cfg).to(device)
     model.train()
-
+    model.eval()
+    #print(next(model.parameters()).device)
+   
     # child_counter = 0
     # for child in model.children():
     #     print(" child", child_counter, "is:")
-    #     print(child)
+    #     print(child.parameters().device)
     #     child_counter += 1
 
     # dummy_input = torch.randn(1,3,640,640).to(device)
@@ -438,8 +442,9 @@ if __name__ == '__main__':
     
     # Profile
     if opt.profile:
-        img = torch.rand(8 if torch.cuda.is_available() else 1, 3, 640, 640).to(device)
+        img = torch.randn(1,3,640,640).to(device)
         y = model(img, profile=True)
+        print(y)
 
     # Tensorboard (not working https://github.com/ultralytics/yolov5/issues/2898)
     # from torch.utils.tensorboard import SummaryWriter
