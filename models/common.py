@@ -272,7 +272,7 @@ class Concat(nn.Module):
     def forward(self, x):
         return torch.cat(x, self.d)
 
-class Add(nn.Module):
+class Dummy(nn.Module):
     # Concatenate a list of tensors along dimension
     def __init__(self, dimension=1):
         super().__init__()
@@ -282,7 +282,7 @@ class Add(nn.Module):
     
         return x
 
-class Add1(nn.Module):
+class Dummy1(nn.Module):
     # Concatenate a list of tensors along dimension
     def __init__(self, dimension=1):
         super().__init__()

@@ -90,7 +90,7 @@ class QFocalLoss(nn.Module):
 
 class ComputeLoss:
     # Compute losses
-    def __init__(self, model, detect_model=-2, autobalance=False):
+    def __init__(self, model, detection_id, autobalance=False):
         self.sort_obj_iou = False
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
@@ -107,101 +107,68 @@ class ComputeLoss:
         if g > 0:
             BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
-        
-        self.balance = []
-        self.ssi = []
-        self.BCEcls = []
-        self.BCEobj = []
-        self.gr = []
-        self.hyp = []
-        self.autobalance = []
-        self.na = []
-        self.nc = []
-        self.nl = []
-        self.anchors = []
-        for m_i in [-4, -3, -2]: 
-            det = model.module.model[m_i] if is_parallel(model) else model.model[m_i]  # Detect() module
-            
-            self.balance.append({3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02]))  # P3-P7
-            self.ssi.append(list(det.stride).index(16) if autobalance else 0)  # stride 16 index
-            self.BCEcls.append(BCEcls)
-            self.BCEobj.append(BCEobj)
-            self.gr.append(1.0)
-            self.hyp.append(h)
-            self.autobalance.append(autobalance)
-            self.na.append(getattr(det, 'na'))
-            self.nc.append(getattr(det, 'nc'))
-            self.nl.append(getattr(det, 'nl'))
-            self.anchors.append(getattr(det, 'anchors'))
+        det = model.module.model[detection_id] if is_parallel(model) else model.model[detection_id]  # Detect() module
+        self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
+        self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
+        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, 1.0, h, autobalance
+        for k in 'na', 'nc', 'nl', 'anchors':
+            setattr(self, k, getattr(det, k))
 
     def __call__(self, p, targets):  # predictions, targets, model
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
-        loss = []
-        loss_items = []
-        for model_num in range(0,3):
-            tcls, tbox, indices, anchors = self.build_targets(p[model_num], targets, model_num)  # targets
+        tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
 
-            # Losses
-            for i, pi in enumerate(p[model_num]):  # layer index, layer predictions
-                b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
-                tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj
+        # Losses
+        for i, pi in enumerate(p):  # layer index, layer predictions
+            b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
+            tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj
 
-                n = b.shape[0]  # number of targets
-                if n:
-                    ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
+            n = b.shape[0]  # number of targets
+            if n:
+                ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
 
-                    # Regression
-                    pxy = ps[:, :2].sigmoid() * 2. - 0.5
-                    pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i]
-                    pbox = torch.cat((pxy, pwh), 1)  # predicted box
-                    iou = bbox_iou(pbox.T, tbox[i], x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
-                    lbox += (1.0 - iou).mean()  # iou loss
+                # Regression
+                pxy = ps[:, :2].sigmoid() * 2. - 0.5
+                pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i]
+                pbox = torch.cat((pxy, pwh), 1)  # predicted box
+                iou = bbox_iou(pbox.T, tbox[i], x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
+                lbox += (1.0 - iou).mean()  # iou loss
 
-                    # Objectness
-                    score_iou = iou.detach().clamp(0).type(tobj.dtype)
-                    if self.sort_obj_iou:
-                        sort_id = torch.argsort(score_iou)
-                        b, a, gj, gi, score_iou = b[sort_id], a[sort_id], gj[sort_id], gi[sort_id], score_iou[sort_id]
-                    tobj[b, a, gj, gi] = (1.0 - self.gr[model_num]) + self.gr[model_num] * score_iou  # iou ratio
+                # Objectness
+                score_iou = iou.detach().clamp(0).type(tobj.dtype)
+                if self.sort_obj_iou:
+                    sort_id = torch.argsort(score_iou)
+                    b, a, gj, gi, score_iou = b[sort_id], a[sort_id], gj[sort_id], gi[sort_id], score_iou[sort_id]
+                tobj[b, a, gj, gi] = (1.0 - self.gr) + self.gr * score_iou  # iou ratio
 
-                    # Classification
-                    if self.nc[model_num] > 1:  # cls loss (only if multiple classes)
-                        t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
-                        t[range(n), tcls[i]] = self.cp
-                        lcls += self.BCEcls[model_num](ps[:, 5:], t)  # BCE
+                # Classification
+                if self.nc > 1:  # cls loss (only if multiple classes)
+                    t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
+                    t[range(n), tcls[i]] = self.cp
+                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
 
-                    # Append targets to text file
-                    # with open('targets.txt', 'a') as file:
-                    #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
+                # Append targets to text file
+                # with open('targets.txt', 'a') as file:
+                #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
-                obji = self.BCEobj[model_num](pi[..., 4], tobj)
-                lobj += obji * self.balance[model_num][i]  # obj loss
-                if self.autobalance[model_num]:
-                    self.balance[model_num][i] = self.balance[model_num][i] * 0.9999 + 0.0001 / obji.detach().item()
+            obji = self.BCEobj(pi[..., 4], tobj)
+            lobj += obji * self.balance[i]  # obj loss
+            if self.autobalance:
+                self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
-            if self.autobalance[model_num]:
-                self.balance[model_num] = [x / self.balance[model_num][self.ssi] for x in self.balance[model_num]]
-            lbox *= self.hyp[model_num]['box']
-            lobj *= self.hyp[model_num]['obj']
-            lcls *= self.hyp[model_num]['cls']
-            bs = tobj.shape[0]  # batch size
+        if self.autobalance:
+            self.balance = [x / self.balance[self.ssi] for x in self.balance]
+        lbox *= self.hyp['box']
+        lobj *= self.hyp['obj']
+        lcls *= self.hyp['cls']
+        bs = tobj.shape[0]  # batch size
 
-            loss.append((lbox + lobj + lcls) * bs)
-            loss_items.append(torch.cat((lbox, lobj, lcls)).detach())
-        
-        mloss = 0
-        mloss_items = torch.zeros(loss_items[0].size())
-        for model_num in range(0,3):
-            mloss += loss[model_num]
-            torch.add(mloss_items, loss_items[model_num])
-            
-            
-        return mloss/3,  torch.div(1, 0.33)
+        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
 
-    def build_targets(self, p, targets, model_num):
+    def build_targets(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
-        na, nt = self.na[model_num], targets.shape[0]  # number of anchors, targets
+        na, nt = self.na, targets.shape[0]  # number of anchors, targets
         tcls, tbox, indices, anch = [], [], [], []
         gain = torch.ones(7, device=targets.device)  # normalized to gridspace gain
         ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
@@ -213,8 +180,8 @@ class ComputeLoss:
                             # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
                             ], device=targets.device).float() * g  # offsets
 
-        for i in range(self.nl[model_num]):
-            anchors = self.anchors[model_num][i]
+        for i in range(self.nl):
+            anchors = self.anchors[i]
             gain[2:6] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
             # Match targets to anchors
@@ -222,7 +189,7 @@ class ComputeLoss:
             if nt:
                 # Matches
                 r = t[:, :, 4:6] / anchors[:, None]  # wh ratio
-                j = torch.max(r, 1. / r).max(2)[0] < self.hyp[model_num]['anchor_t']  # compare
+                j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare
                 # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
                 t = t[j]  # filter
 

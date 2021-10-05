@@ -104,7 +104,9 @@ def run(data,
         save_dir=Path(''),
         plots=True,
         callbacks=Callbacks(),
-        compute_loss=None,
+        compute_loss_x=None,
+        compute_loss_m=None,
+        compute_loss_s=None,
         ):
     # Initialize/load model and set device
     training = model is not None
@@ -170,22 +172,35 @@ def run(data,
         dt[0] += t2 - t1
 
         # Run model
-        out, train_out = model(img, augment=augment)  # inference and training outputs
+        model_outputs = model(img, augment=augment)  # inference and training outputs
+
+        outs, train_outs = model_outputs[0]
+        outm, train_outm = model_outputs[1]
+        outx, train_outx = model_outputs[2]
         dt[1] += time_sync() - t2
 
         # Compute loss
-        if compute_loss:
-            loss += compute_loss([x.float() for x in train_out], targets)[1]  # box, obj, cls
+        if compute_loss_x:
+            loss += compute_loss_x([x.float() for x in train_outx], targets)[1]  # box, obj, cls
+        
+        if compute_loss_m:
+            loss += compute_loss_m([x.float() for x in train_outm], targets)[1]  # box, obj, cls
+        
+        if compute_loss_s:
+            loss += compute_loss_s([x.float() for x in train_outs], targets)[1]  # box, obj, cls
 
         # Run NMS
         targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
         lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
         t3 = time_sync()
-        out = non_max_suppression(out, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+        outx = non_max_suppression(outx, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+        outm = non_max_suppression(outm, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+        outs = non_max_suppression(outs, conf_thres, iou_thres, labels=lb, multi_label=True, agnostic=single_cls)
+
         dt[2] += time_sync() - t3
 
         # Statistics per image
-        for si, pred in enumerate(out):
+        for si, pred in enumerate(outx):
             labels = targets[targets[:, 0] == si, 1:]
             nl = len(labels)
             tcls = labels[:, 0].tolist() if nl else []  # target class
@@ -227,7 +242,7 @@ def run(data,
             f = save_dir / f'val_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'val_batch{batch_i}_pred.jpg'  # predictions
-            Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
+            Thread(target=plot_images, args=(img, output_to_target(outx), paths, f, names), daemon=True).start()
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy

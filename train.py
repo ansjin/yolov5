@@ -260,7 +260,10 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
-    compute_loss = ComputeLoss(model)  # init loss class
+    compute_loss_x = ComputeLoss(model, detection_id=-2)  # init loss class
+    compute_loss_m = ComputeLoss(model, detection_id=-3)  # init loss class
+    compute_loss_s = ComputeLoss(model, detection_id=-4)  # init loss class
+
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers} dataloader workers\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
@@ -288,6 +291,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
+            #print(device)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
             # Warmup
@@ -311,8 +315,21 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
             # Forward
             with amp.autocast(enabled=cuda):
+                model = model.to(device)
+                imgs = imgs.to(device)
                 pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                lossx, loss_itemsx = compute_loss_x(pred[2], targets.to(device))  # loss scaled by batch_size
+                lossm, loss_itemsm = compute_loss_m(pred[1], targets.to(device))  # loss scaled by batch_size
+                losss, loss_itemss = compute_loss_s(pred[0], targets.to(device))  # loss scaled by batch_size
+
+                loss = (lossx + lossm + losss)/ 3
+
+                loss_items = torch.zeros(loss_itemsx.size(), device=device)
+                torch.add(loss_items, loss_itemsm)
+                torch.add(loss_items, loss_itemss)
+
+                loss_items = torch.div(loss_items, 0.33)
+
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -360,7 +377,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                                            verbose=nc < 50 and final_epoch,
                                            plots=plots and final_epoch,
                                            callbacks=callbacks,
-                                           compute_loss=compute_loss)
+                                           compute_loss_x=compute_loss_x,
+                                           compute_loss_m=compute_loss_m,
+                                           compute_loss_s=compute_loss_s)
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]

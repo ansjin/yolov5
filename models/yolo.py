@@ -53,6 +53,7 @@ class Detect(nn.Module):
     def forward(self, x):
         z = []  # inference output
         for i in range(self.nl):
+            self.m[i] = self.m[i].to('cuda:0')
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
@@ -98,6 +99,7 @@ class Detect2(nn.Module):
     def forward(self, x):
         z = []  # inference output
         for i in range(self.nl):
+            self.m[i] = self.m[i].to('cuda:0')
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
@@ -143,6 +145,7 @@ class Detect3(nn.Module):
     def forward(self, x):
         z = []  # inference output
         for i in range(self.nl):
+            self.m[i] = self.m[i].to('cuda:0')
             x[i] = self.m[i](x[i])  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
@@ -396,7 +399,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
             c2 = ch[f] // args[0] ** 2
-        elif m is Add:
+        elif m is Dummy:
             c2 = sum([ch[x] for x in f])
         else:
             c2 = ch[f]
@@ -437,8 +440,8 @@ if __name__ == '__main__':
     #     print(child.parameters().device)
     #     child_counter += 1
 
-    # dummy_input = torch.randn(1,3,640,640).to(device)
-    # torch.onnx.export(model, dummy_input, "../weights/yolov_parallel_x_m_s5.onnx", opset_version=12)
+    dummy_input = torch.randn(1,3,640,640).to(device)
+    torch.onnx.export(model, dummy_input, "../weights/yolov_parallel_x_m_s5.onnx", opset_version=12)
     
     # Profile
     if opt.profile:
